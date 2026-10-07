@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "apiVersion": 1,
+  "id": "tooru.volume-mixer",
+  "name": "Frame 音量合成器",
+  "author": "tooru",
+  "version": "0.2.9",
+  "description": "按进程调节播放音量与静音，支持 PipeWire 和 PulseAudio 应用。",
+  "details": "顶部系统总音量控制当前默认播放设备，下方每个应用一行，可独立调音量与静音。透明背景界面沿用 Framely 样式，以 SteamOS 用户运行。",
+  "category": "工具",
+  "tags": [
+    "音频",
+    "音量",
+    "混音"
+  ],
+  "backend": {
+    "entry": "backend",
+    "runAs": "steamos",
+    "autostart": true,
+    "restart": "on-failure",
+    "restartLimit": 3
+  },
+  "lifecycle": {
+    "onStart": true,
+    "onStop": true,
+    "timeoutSeconds": 15
+  },
+  "ui": {
+    "quickPage": "page.js",
+    "windows": {
+      "main": {
+        "entry": "page.js",
+        "title": "Frame 音量合成器",
+        "dockIcon": true,
+        "width": 1200,
+        "height": 800,
+        "widthMeters": 2.4
+      }
+    }
+  },
+  "files": {},
+  "changelog": "移除输出设备列表和插件自带背景，图标无边框，增加左右内边距。",
+  "icon": "icon.png"
+}

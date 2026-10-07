@@ -1,0 +1,11 @@
+node_modules/
+backend/target/
+payload/
+dist/
+
+__pycache__/
+*.pyc
+release-notes.md
+assets/
+docs/preview*
+!docs/preview-v029.png

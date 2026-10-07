@@ -1,0 +1,17 @@
+import {build} from 'esbuild';
+import {mkdir,copyFile,chmod,rename} from 'node:fs/promises';
+import {spawnSync} from 'node:child_process';
+import path from 'node:path';
+const root=path.resolve(import.meta.dirname,'..');
+const result=spawnSync('cargo',['build','--release','--locked','--manifest-path',path.join(root,'backend/Cargo.toml')],{stdio:'inherit'});
+if(result.status!==0)process.exit(result.status??1);
+await mkdir(path.join(root,'payload'),{recursive:true});
+const target=process.env.CARGO_BUILD_TARGET;
+const targetDir=process.env.CARGO_TARGET_DIR?path.resolve(process.env.CARGO_TARGET_DIR):path.join(root,'backend/target');
+const backendTemp=path.join(root,`payload/.backend-${process.pid}.tmp`);
+await copyFile(path.join(targetDir,target??'', 'release/framely-volume-mixer'),backendTemp);
+await chmod(backendTemp,0o755);
+await rename(backendTemp,path.join(root,'payload/backend'));
+await build({entryPoints:[path.join(root,'ui/page.tsx')],outfile:path.join(root,'payload/page.js'),bundle:true,minify:true,define:{'process.env.NODE_ENV':'"production"'}});
+await copyFile(path.join(root,'icon.png'),path.join(root,'payload/icon.png'));
+console.log('Built payload/backend, payload/page.js and payload/icon.png');
