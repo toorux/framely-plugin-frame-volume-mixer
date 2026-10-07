@@ -12,7 +12,7 @@ import zipfile
 from submit_database import release_url
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PAYLOAD_FILES = {'backend', 'page.js', 'icon.png'}
+PAYLOAD_FILES = {'backend', 'page.js', 'icon.png', 'THIRD_PARTY_LICENSES.txt'}
 
 
 def download_url(manifest, root, repository=None):

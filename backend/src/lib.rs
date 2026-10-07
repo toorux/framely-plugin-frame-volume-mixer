@@ -1,3 +1,4 @@
+pub mod focus;
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -15,7 +16,7 @@ pub struct Target {
     pub id: u32,
     pub serial: u64,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Stream {
     #[serde(flatten)]
@@ -186,6 +187,16 @@ pub fn discover(objects: &Value) -> Result<Snapshot> {
 }
 // Drain both pipes while waiting: hung audio tools cannot hold the RPC loop forever.
 pub fn command(program: &str, args: &[String]) -> Result<String> {
+    // Isolated controller integration tests. Release builds always use system tools.
+    #[cfg(debug_assertions)]
+    let test_program = std::env::var_os("FRAMELY_MIXER_TEST_BIN").map(|dir| {
+        std::path::PathBuf::from(dir).join(std::path::Path::new(program).file_name().unwrap())
+    });
+    #[cfg(debug_assertions)]
+    let program = test_program
+        .as_ref()
+        .and_then(|p| p.to_str())
+        .unwrap_or(program);
     let mut child = Command::new(program)
         .args(args)
         .env("LC_ALL", "C")

@@ -9,3 +9,5 @@ release-notes.md
 assets/
 docs/preview*
 !docs/preview-v029.png
+
+!docs/preview-background-mute.png

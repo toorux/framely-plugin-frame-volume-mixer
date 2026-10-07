@@ -1,6 +1,6 @@
 use anyhow::{ensure, Result};
 use framely_volume_mixer::{
-    change, icon, master_change, output_change, set_default, status, Change, DefaultOutput,
+    icon, master_change, output_change, set_default, status, Change, DefaultOutput,
 };
 use serde_json::{json, Value};
 use std::{
@@ -30,6 +30,12 @@ fn main() -> Result<()> {
         output(status());
         return Ok(());
     }
+    if std::env::args().any(|a| a == "--focus") {
+        let reader = framely_volume_mixer::focus::Reader::start();
+        std::thread::sleep(Duration::from_secs(2));
+        output(serde_json::to_value(reader.get())?);
+        return Ok(());
+    }
     let (tx, rx) = mpsc::sync_channel(32);
     std::thread::spawn(move || {
         let mut input = std::io::BufReader::new(std::io::stdin());
@@ -49,6 +55,7 @@ fn main() -> Result<()> {
             }
         }
     });
+    let mut policy = framely_volume_mixer::focus::Controller::new();
     let mut active = false;
     let interval = Duration::from_millis(500);
     let mut next_status = Instant::now() + interval;
@@ -70,23 +77,34 @@ fn main() -> Result<()> {
                         }
                         "framely.lifecycle.stop" => {
                             active = false;
+                            policy.stop();
                             json!({"stopped":true})
                         }
                         "framely.ui.visibility" => json!({"accepted":true}),
-                        "status.get" => status(),
+                        "status.get" => policy.tick(),
+                        "focus.set" => policy.set(&req["params"])?,
+                        "focus.global" => policy.global(&req["params"])?,
                         "icon.get" => icon(req["params"]["key"].as_str().unwrap_or(""))?,
                         "outputs.set" => {
-                            output_change(serde_json::from_value::<Change>(req["params"].clone())?)?
+                            output_change(serde_json::from_value::<Change>(
+                                req["params"].clone(),
+                            )?)?;
+                            policy.tick()
                         }
-                        "outputs.default" => set_default(serde_json::from_value::<DefaultOutput>(
-                            req["params"].clone(),
-                        )?)?,
+                        "outputs.default" => {
+                            set_default(serde_json::from_value::<DefaultOutput>(
+                                req["params"].clone(),
+                            )?)?;
+                            policy.tick()
+                        }
                         "master.set" => {
-                            master_change(serde_json::from_value::<Change>(req["params"].clone())?)?
+                            master_change(serde_json::from_value::<Change>(
+                                req["params"].clone(),
+                            )?)?;
+                            policy.tick()
                         }
-                        "streams.set" => {
-                            change(serde_json::from_value::<Change>(req["params"].clone())?)?
-                        }
+                        "streams.set" => policy
+                            .manual(serde_json::from_value::<Change>(req["params"].clone())?)?,
                         _ => anyhow::bail!("未知方法"),
                     })
                 })();
@@ -97,12 +115,13 @@ fn main() -> Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if active {
-                    output(json!({"event":"status","data":status()}));
+                    output(json!({"event":"status","data":policy.tick()}));
                 }
                 next_status = Instant::now() + interval;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+    policy.stop();
     Ok(())
 }

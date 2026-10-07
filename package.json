@@ -1,6 +1,6 @@
 {
   "name": "framely-plugin-frame-volume-mixer",
-  "version": "0.2.10-preview.1",
+  "version": "0.2.10-preview.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test:i18n": "node tests/i18n.mjs",
     "test": "cargo test --manifest-path backend/Cargo.toml",
-    "dev": "node scripts/preview.mjs"
+    "dev": "node scripts/preview.mjs",
+    "test:focus": "cargo build --locked --manifest-path backend/Cargo.toml && python3 tests/focus_policy.py"
   },
   "dependencies": {
     "@framely/sdk": "file:vendor/framely-sdk",

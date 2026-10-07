@@ -4,7 +4,7 @@ Framely 插件 `tooru.volume-mixer`，在 SteamOS 音频会话用户下运行，
 
 安卓 Lepton 应用通过音频容器主机名匹配 Framely APK 管理记录，读取应用名称和图标；其他应用尝试读取系统图标，缺失图标显示空白占位。应用原始名称不翻译。
 
-![界面预览](docs/preview-v029.png)
+![界面预览](docs/preview-background-mute.png)
 
 ## 工作方式
 
@@ -12,17 +12,18 @@ Framely 插件 `tooru.volume-mixer`，在 SteamOS 音频会话用户下运行，
 
 写入前检查 PipeWire 服务 cookie、节点 ID 与序列号，拒绝已经退出或被复用的流。录音流、虚拟处理链及音频服务内部流不提供应用控制；顶部仅控制当前默认播放设备。
 
-“播放中”表示流正在处理，不能证明音频信号非零。多个来源混在一条流时只能控制整体音量；未进入 PipeWire 的 ALSA 独占播放无法列出。多流写入不是原子事务，恢复音量由 WirePlumber 或应用决定。停止插件不会回滚用户的音量修改。
+“播放中”表示流正在处理，不能证明音频信号非零。多个来源混在一条流时只能控制整体音量；未进入 PipeWire 的 ALSA 独占播放无法列出。多流写入不是原子事务，已识别应用的音量和手动静音由插件记忆并在下次出现时恢复。停止插件不会回滚用户的音量修改。
 
 ## 开发与本地构建
 
-需要 Node.js 22、Rust，以及目标平台 C linker。
+需要 Node.js 22、Rust，以及目标平台 C/C++17 工具链。
 
 ```sh
 npm ci
 npm run typecheck
 npm test
 npm run test:i18n
+npm run test:focus
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
@@ -37,9 +38,17 @@ python3 scripts/pack.py
 
 需要先安装 ARM64 GNU linker。安装包位于 `dist/tooru.volume-mixer-<version>.framely`，附带 `SHA256SUMS`。打包脚本从 Git remote 或 `GITHUB_REPOSITORY` 推导固定 Release 下载地址，不修改源码 manifest；包内包含 ARM64 后端、页面和根目录 `icon.png`。
 
-设备运行时只需系统已有的 `pw-dump`、`wpctl`，无需 Node、Python 或 Rust。可使用 `framely verify <package>` 再次验证。
+设备运行时使用系统已有的 `pw-dump`、`wpctl`、`xprop`；VR 焦点读取动态加载当前 SteamVR 的 OpenVR 库，KDE Wayland 通过临时 KWin 脚本读取活动窗口。无需 Node、Python 或 Rust。可使用 `framely verify <package>` 再次验证。
 
 `npm run dev` 提供模拟预览：`/main`、`/quick`；`/host` 模拟 Framely 容器背景。`hostLanguage=zh-CN`、`en-US` 或 `fr-FR` 模拟宿主语言，`hostLanguageAfter` 模拟运行时变化，`lag=1` 模拟延迟回读。预览不会操作设备。
+
+## 后台静音与应用设置记忆
+
+顶部“后台静音”图标开关统一控制所有可关联焦点的应用。每个应用右侧另有独立图标开关，悬停提示“后台静音”。全局关闭后仍遵循应用独立开关；关闭所有相关开关或回到前台时恢复用户原来的静音状态。自动静音不改变音量。插件页面关闭后，后端仍继续运行。
+
+焦点自动按应用匹配 Gamescope 的 Steam 应用 ID、SteamVR 场景应用进程或桌面活动窗口；桌面支持 X11/EWMH 与 KDE Plasma 5/6 Wayland。安卓容器按 Steam ID / 注册包名关联，避免把容器 PID 当宿主 PID。其他 Wayland 合成器尚未接入。无法关联、焦点读取失败或超时，会暂停自动控制并恢复插件施加的静音，界面显示“等待焦点信息”。SteamVR 的场景焦点与悬停某个 overlay 是不同概念。
+
+用户音量、手动静音、每应用后台静音及全局开关保存在 `$XDG_STATE_HOME/framely-volume-mixer/focus.json`（默认 `~/.local/state/framely-volume-mixer/focus.json`），以 Steam ID 或可执行文件路径关联应用；应用退出、音频流 ID 改变、插件重启后仍恢复。应用共用同一可执行文件时共用应用设置，单独播放流按名称记忆。状态文件也保存自动静音前的状态，正常停用及崩溃后的下一次启动会尝试恢复仍存在的播放流。
 
 ## GitHub Actions 发布与数据库登记
 
@@ -56,8 +65,8 @@ python3 scripts/pack.py
 - 可选 Variable `DATABASE_REPOSITORY`：覆盖目标仓库，格式为 `owner/repository`。
 
 ```sh
-git tag v0.2.10-preview.1
-git push origin v0.2.10-preview.1
+git tag v0.2.10-preview.2
+git push origin v0.2.10-preview.2
 ```
 
 手动运行 **Release plugin** 时选择对应版本标签。发布成功但数据库登记失败时，运行 **Register plugin in database**，填入已发布的标签；重试不会修改其他插件或重复提交。该流程更新作者的数据库仓库，不自动向上游创建 PR。
@@ -67,3 +76,5 @@ git push origin v0.2.10-preview.1
 测试覆盖音频流关联、捕获流排除、身份复用/服务重启保护、音量范围、宿主语言规则、发布包确定性、哈希校验、数据库分支选择和固定提交登记。`tests/device.py <backend>` 在设备创建临时静音流进行回归，默认播放设备只写回已有设置。设备端细节见 [VALIDATION.md](VALIDATION.md)。
 
 `vendor/framely-sdk` 来自 [Framely](https://github.com/SteamFramelyHomebrew/framely)，使用 AGPL-3.0-only，许可证保存在其目录；本地增加了与宿主一致的语言读取接口。React、Radix 等依赖通过 npm 安装。
+
+OpenVR 头文件来自 Valve 官方 SDK，BSD-3-Clause 许可证位于 `backend/vendor/openvr/LICENSE`，安装包附带 `THIRD_PARTY_LICENSES.txt`。构建需要 C++17 编译器；交叉编译 ARM64 时需要 `aarch64-linux-gnu-g++` / `ar`。

@@ -14,4 +14,5 @@ await chmod(backendTemp,0o755);
 await rename(backendTemp,path.join(root,'payload/backend'));
 await build({entryPoints:[path.join(root,'ui/page.tsx')],outfile:path.join(root,'payload/page.js'),bundle:true,minify:true,define:{'process.env.NODE_ENV':'"production"'}});
 await copyFile(path.join(root,'icon.png'),path.join(root,'payload/icon.png'));
-console.log('Built payload/backend, payload/page.js and payload/icon.png');
+await copyFile(path.join(root,'THIRD_PARTY_LICENSES.txt'),path.join(root,'payload/THIRD_PARTY_LICENSES.txt'));
+console.log('Built backend, page, icon and third-party licenses');

@@ -59,6 +59,7 @@ jobs:
           npm run typecheck
           npm test
           npm run test:i18n
+          npm run test:focus
           python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Build and package
         run: |

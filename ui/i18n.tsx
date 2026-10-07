@@ -14,6 +14,8 @@ export const messages:Record<string,string>={
 '取消静音 {name}':'Unmute {name}','静音 {name}':'Mute {name}',
 '各播放流音量不同，调节后统一设置':'Streams have different volumes. Adjusting sets them to the same level.',
 '正在同步音量':'Synchronizing volume',
+'后台静音':'Mute in background','所有应用后台静音':'Mute all apps in background','{name} 后台静音':'Mute {name} in background',
+'后台静音中':'Muted in background','等待焦点信息':'Waiting for focus information','无法关联应用焦点':'Unable to associate app focus','无效开关状态':'Invalid toggle state',
 '请以 SteamOS 音频会话用户运行，无需 root':'Run as the SteamOS audio session user, without root',
 '请求过大':'Request too large','未知方法':'Unknown method','pw-dump 未返回对象列表':'pw-dump did not return an object list',
 '缺少 PipeWire 服务标识':'Missing PipeWire service identifier','读取输出失败':'Unable to read output',
