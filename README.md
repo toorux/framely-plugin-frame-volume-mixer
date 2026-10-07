@@ -65,8 +65,8 @@ python3 scripts/pack.py
 - 可选 Variable `DATABASE_REPOSITORY`：覆盖目标仓库，格式为 `owner/repository`。
 
 ```sh
-git tag v0.2.10-preview.2
-git push origin v0.2.10-preview.2
+git tag v0.2.10-preview.3
+git push origin v0.2.10-preview.3
 ```
 
 手动运行 **Release plugin** 时选择对应版本标签。发布成功但数据库登记失败时，运行 **Register plugin in database**，填入已发布的标签；重试不会修改其他插件或重复提交。该流程更新作者的数据库仓库，不自动向上游创建 PR。

@@ -1,5 +1,5 @@
 //! Focus providers and an identity-checked mute policy, independent of UI visibility.
-use crate::{change, command, snapshot, status, validate, Change, Stream, Target};
+use crate::{command, snapshot, status, validate, write_change as change, Change, Stream, Target};
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Default, Debug, Serialize)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize)]
 pub struct Focus {
     pub gamescope: Option<u64>,
     pub desktop: Option<u32>,
@@ -387,6 +387,9 @@ pub struct Reader {
 }
 impl Reader {
     pub fn start() -> Self {
+        Self::start_notifying(None)
+    }
+    fn start_notifying(notify: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
         let current = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let shared = current.clone();
@@ -395,6 +398,8 @@ impl Reader {
             let mut kwin = None;
             let mut vr = false;
             let mut scene_pids = BTreeSet::new();
+            let mut registered = BTreeSet::new();
+            let mut vr_refresh = Instant::now() - Duration::from_secs(2);
             let mut retry = Instant::now() - Duration::from_secs(10);
             while !done.load(Ordering::Relaxed) {
                 if retry.elapsed() >= Duration::from_secs(5) {
@@ -432,28 +437,44 @@ impl Reader {
                     }
                     scene_pids.retain(|pid| PathBuf::from(format!("/proc/{pid}")).exists());
                     f.vr_apps.extend(scene_pids.iter().copied());
-                    let mut ids = [0u32; 256];
-                    let n = unsafe { mixer_vr_applications(ids.as_mut_ptr(), ids.len() as u32) };
-                    f.vr_apps.extend(ids.into_iter().take(n as usize));
-                    // Runtime process exit invalidates stale OpenVR interfaces.
-                    if !fs::read_dir("/proc")
-                        .ok()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|e| e.ok())
-                        .any(|e| {
-                            fs::read_to_string(e.path().join("comm"))
-                                .is_ok_and(|s| s.trim() == "vrserver")
-                        })
-                    {
-                        unsafe { mixer_vr_close() };
-                        vr = false;
-                        f.vr = None;
-                        f.vr_apps.clear();
+                    if vr_refresh.elapsed() >= Duration::from_secs(1) {
+                        vr_refresh = Instant::now();
+                        let mut ids = [0u32; 256];
+                        let n =
+                            unsafe { mixer_vr_applications(ids.as_mut_ptr(), ids.len() as u32) };
+                        registered = ids.into_iter().take(n as usize).collect();
+                        // Keep expensive runtime/app discovery off the fast foreground path.
+                        if !fs::read_dir("/proc")
+                            .ok()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|e| e.ok())
+                            .any(|e| {
+                                fs::read_to_string(e.path().join("comm"))
+                                    .is_ok_and(|s| s.trim() == "vrserver")
+                            })
+                        {
+                            unsafe { mixer_vr_close() };
+                            vr = false;
+                            f.vr = None;
+                            f.vr_apps.clear();
+                            registered.clear();
+                        }
+                    }
+                    f.vr_apps.extend(registered.iter().copied());
+                }
+                let changed = {
+                    let mut cached = shared.lock().unwrap();
+                    let changed = cached.as_ref().is_none_or(|(old, _)| old != &f);
+                    *cached = Some((f, Instant::now()));
+                    changed
+                };
+                if changed {
+                    if let Some(notify) = &notify {
+                        notify();
                     }
                 }
-                *shared.lock().unwrap() = Some((f, Instant::now()));
-                thread::sleep(Duration::from_millis(300));
+                thread::sleep(Duration::from_millis(75));
             }
             unsafe { mixer_vr_close() };
         });
@@ -511,9 +532,14 @@ pub struct Controller {
     reader: Option<Reader>,
     recover: bool,
     seen: BTreeSet<String>,
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
+    cached: Option<Value>,
 }
 impl Controller {
     pub fn new() -> Self {
+        Self::notifying(None)
+    }
+    pub fn notifying(notify: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         let dir = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
@@ -529,6 +555,8 @@ impl Controller {
             reader: None,
             recover: true,
             seen: BTreeSet::new(),
+            notify,
+            cached: None,
         }
     }
     fn save(&self) -> Result<()> {
@@ -680,7 +708,20 @@ impl Controller {
         Ok(self.tick())
     }
     pub fn tick(&mut self) -> Value {
-        let mut raw = status();
+        let raw = self.apply(status(), true);
+        self.cached = raw["connected"]
+            .as_bool()
+            .filter(|v| *v)
+            .map(|_| raw.clone());
+        raw
+    }
+    pub fn focus_changed(&mut self) -> Value {
+        match self.cached.clone() {
+            Some(raw) => self.apply(raw, false),
+            None => self.tick(),
+        }
+    }
+    fn apply(&mut self, mut raw: Value, refresh: bool) -> Value {
         raw["backgroundMute"] = json!(self.saved.global);
         let Some(cookie) = raw["cookie"].as_u64() else {
             return raw;
@@ -694,7 +735,7 @@ impl Controller {
             return self.tick();
         }
         if (self.saved.global || !self.saved.enabled.is_empty()) && self.reader.is_none() {
-            self.reader = Some(Reader::start());
+            self.reader = Some(Reader::start_notifying(self.notify.clone()));
         }
         let focus = self.reader.as_ref().map(|r| r.get()).unwrap_or_default();
         let alive: BTreeSet<_> = streams
@@ -711,7 +752,7 @@ impl Controller {
             let id = identity(&s);
             let key = format!("{cookie}:{}", s.target.serial);
             let mut preference_error = None;
-            if !self.seen.contains(&key) {
+            if refresh && !self.seen.contains(&key) {
                 if let Some(pref) = id
                     .as_ref()
                     .and_then(|id| self.saved.preferences.get(&id.key))
@@ -799,7 +840,7 @@ impl Controller {
                 }
             }
             if let Some(id) = &id {
-                if error.is_none() {
+                if refresh && error.is_none() {
                     let desired = self.saved.owned.get(&key).map(|o| o.muted).or(s.muted);
                     let count = streams
                         .iter()
@@ -850,6 +891,7 @@ impl Controller {
         if let Err(e) = self.save() {
             raw["focusError"] = json!(e.to_string());
         }
+        self.cached = Some(raw.clone());
         raw
     }
 }

@@ -499,12 +499,25 @@ pub fn set_default(change: DefaultOutput) -> Result<Value> {
     Ok(status())
 }
 fn change_mode(change: Change, mode: Control) -> Result<Value> {
-    validate_mode(&change, &snapshot()?, mode)?;
+    write_mode(change, mode)?;
+    Ok(status())
+}
+/// Write without a redundant full volume readback; every target remains identity checked.
+pub fn write_change(change: Change) -> Result<()> {
+    write_mode(change, Control::Streams)
+}
+fn write_mode(change: Change, mode: Control) -> Result<()> {
+    let initial = snapshot()?;
+    validate_mode(&change, &initial, mode)?;
     let mut applied = 0;
     for target in &change.targets {
         // Re-enumerate each target immediately before writing; never use PID-wide
         // writes that could also affect capture streams or virtual system nodes.
-        let current = snapshot()?;
+        let current = if applied == 0 {
+            initial.clone()
+        } else {
+            snapshot()?
+        };
         validate_mode(
             &Change {
                 cookie: change.cookie,
@@ -533,7 +546,7 @@ fn change_mode(change: Change, mode: Control) -> Result<Value> {
         wp(&args).with_context(|| format!("设置失败；已更新 {applied} 个流，请刷新确认"))?;
         applied += 1;
     }
-    Ok(status())
+    Ok(())
 }
 #[cfg(test)]
 mod tests {

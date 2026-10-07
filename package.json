@@ -1,6 +1,6 @@
 {
   "name": "framely-plugin-frame-volume-mixer",
-  "version": "0.2.10-preview.2",
+  "version": "0.2.10-preview.3",
   "private": true,
   "type": "module",
   "scripts": {

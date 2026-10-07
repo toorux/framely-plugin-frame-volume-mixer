@@ -5,13 +5,18 @@ use framely_volume_mixer::{
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, Read, Write},
-    sync::mpsc,
+    sync::{mpsc, Arc},
     time::{Duration, Instant},
 };
 fn output(v: Value) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{v}");
     let _ = out.flush();
+}
+enum Message {
+    Request(Vec<u8>),
+    Focus,
+    Closed,
 }
 fn main() -> Result<()> {
     ensure!(
@@ -37,6 +42,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let (tx, rx) = mpsc::sync_channel(32);
+    let focus_tx = tx.clone();
     std::thread::spawn(move || {
         let mut input = std::io::BufReader::new(std::io::stdin());
         loop {
@@ -48,20 +54,30 @@ fn main() -> Result<()> {
                     break;
                 }
                 _ => {
-                    if tx.send(line).is_err() {
+                    if tx.send(Message::Request(line)).is_err() {
                         break;
                     }
                 }
             }
         }
+        let _ = tx.send(Message::Closed);
     });
-    let mut policy = framely_volume_mixer::focus::Controller::new();
+    let mut policy =
+        framely_volume_mixer::focus::Controller::notifying(Some(Arc::new(move || {
+            let _ = focus_tx.try_send(Message::Focus);
+        })));
     let mut active = false;
     let interval = Duration::from_millis(500);
     let mut next_status = Instant::now() + interval;
     loop {
         match rx.recv_timeout(next_status.saturating_duration_since(Instant::now())) {
-            Ok(line) => {
+            Ok(Message::Closed) => break,
+            Ok(Message::Focus) => {
+                if active {
+                    output(json!({"event":"status","data":policy.focus_changed()}));
+                }
+            }
+            Ok(Message::Request(line)) => {
                 let req: Value = match serde_json::from_slice(&line) {
                     Ok(v) => v,
                     Err(e) => {
@@ -114,10 +130,10 @@ fn main() -> Result<()> {
                 });
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                next_status = Instant::now() + interval;
                 if active {
                     output(json!({"event":"status","data":policy.tick()}));
                 }
-                next_status = Instant::now() + interval;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }

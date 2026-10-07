@@ -2,22 +2,24 @@
 import json
 import os
 import pathlib
-import select
+import queue
+import threading
 import subprocess
 import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--format-version=1', '--manifest-path', str(ROOT / 'backend/Cargo.toml')]))
-backend = pathlib.Path(metadata['target_directory']) / 'debug/framely-volume-mixer'
+backend = pathlib.Path(os.environ.get('MIXER_TEST_BACKEND', str(pathlib.Path(metadata['target_directory']) / 'debug/framely-volume-mixer')))
 
 TOOLS = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys
 path=pathlib.Path(os.environ['FOCUS_FIXTURE'])
 s=json.loads(path.read_text()); program=pathlib.Path(sys.argv[0]).name
 if program=='xprop':
- if s['focus'] is None: sys.exit(1)
- print('GAMESCOPE_FOCUSED_APP(CARDINAL) =',s['focus'])
+ focus=json.loads(pathlib.Path(os.environ['FOCUS_VALUE']).read_text())
+ if focus is None: sys.exit(1)
+ print('GAMESCOPE_FOCUSED_APP(CARDINAL) =',focus)
 elif program=='pw-dump':
  print(json.dumps([{'type':'PipeWire:Interface:Core','info':{'cookie':s['cookie']}}, *[
   {'id':n['id'],'type':'PipeWire:Interface:Node','info':{'state':'running','props':{
@@ -39,16 +41,24 @@ with tempfile.TemporaryDirectory(prefix='mixer-policy-') as temporary:
         p = tmp / name
         p.write_text(TOOLS)
         p.chmod(0o755)
+    focus_file = tmp / 'focus.json'
+    focus_file.write_text('42')
     fixture = tmp / 'audio.json'
     state = {'cookie': 7, 'focus': 42, 'nodes': [
         {'id': 10, 'serial': 100, 'app': 42, 'name': 'A', 'volume': 60, 'muted': False},
         {'id': 11, 'serial': 101, 'app': 43, 'name': 'B', 'volume': 80, 'muted': True}]}
     fixture.write_text(json.dumps(state))
-    env = {**os.environ, 'PATH': str(tmp) + ':' + os.environ['PATH'], 'XDG_STATE_HOME': str(tmp / 'saved'), 'FOCUS_FIXTURE': str(fixture), 'FRAMELY_MIXER_TEST_BIN': str(tmp)}
+    env = {**os.environ, 'PATH': str(tmp) + ':' + os.environ['PATH'], 'XDG_STATE_HOME': str(tmp / 'saved'), 'FOCUS_VALUE': str(focus_file), 'FOCUS_FIXTURE': str(fixture), 'FRAMELY_MIXER_TEST_BIN': str(tmp)}
     process = None
     def start():
         global process
         process = subprocess.Popen([str(backend)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, bufsize=1)
+        global messages
+        messages = queue.Queue()
+        def read_messages():
+            for line in process.stdout:
+                messages.put(json.loads(line))
+        threading.Thread(target=read_messages, daemon=True).start()
     request_id = 0
     def rpc(method, **params):
         global request_id
@@ -57,16 +67,16 @@ with tempfile.TemporaryDirectory(prefix='mixer-policy-') as temporary:
         process.stdin.flush()
         end = time.monotonic() + 12
         while time.monotonic() < end:
-            if not select.select([process.stdout], [], [], 1)[0]: continue
-            line = process.stdout.readline()
-            assert line, process.stderr.read()
-            message = json.loads(line)
+            try: message = messages.get(timeout=1)
+            except queue.Empty: continue
             if message.get('id') == request_id:
                 assert 'error' not in message, message
                 return message['result']
         raise AssertionError('RPC timeout')
     def update(**values):
-        s = json.loads(fixture.read_text()); s.update(values); fixture.write_text(json.dumps(s))
+        if 'focus' in values: focus_file.write_text(json.dumps(values.pop('focus')))
+        if values:
+            s = json.loads(fixture.read_text()); s.update(values); fixture.write_text(json.dumps(s))
     def until(predicate):
         for _ in range(30):
             result = rpc('status.get')
@@ -117,6 +127,34 @@ with tempfile.TemporaryDirectory(prefix='mixer-policy-') as temporary:
         external['nodes'][0].update(id=30,serial=300,volume=100,name='A')
         fixture.write_text(json.dumps(external))
         assert next(s for s in rpc('status.get')['streams'] if s['host']=='lepton-steamlaunch-42')['volume']==25, 'External manual volume must also persist' 
+        update(focus=42)
+        rpc('focus.global', enabled=True)
+        until(lambda r: next(s for s in r['streams'] if s['host']=='lepton-steamlaunch-42')['focused'] is True)
+        rpc('framely.lifecycle.start')
+        timings = []
+        for focus in [43, 42] * 6:
+            started = time.monotonic()
+            update(focus=focus)
+            wanted = focus == 43
+            while time.monotonic() - started < 3:
+                try: actual = json.loads(fixture.read_text())['nodes'][0]['muted']
+                except json.JSONDecodeError: continue
+                if actual == wanted: break
+                time.sleep(.005)
+            else: raise AssertionError('Autonomous focus switch did not change mute')
+            elapsed = time.monotonic() - started
+            timings.append(elapsed * 1000)
+            if not os.environ.get('MIXER_TEST_BACKEND'):
+                assert elapsed < .8, f'Focus switch too slow: {elapsed:.3f}s'
+            # Let status publication finish before the next independent transition.
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                message = messages.get(timeout=3)
+                if message.get('event') == 'status' and next(s for s in message['data']['streams'] if s['host']=='lepton-steamlaunch-42').get('focused') == (focus == 42): break
+            else: raise AssertionError('No focus status event')
+            time.sleep(.04)
+        print('Autonomous focus-to-mute latency (ms):', ', '.join(f'{n:.0f}' for n in timings))
+        rpc('framely.lifecycle.stop')
         print('Global/app policy, manual mute preservation, missing focus, crash recovery and reopened-app preferences passed')
     finally:
         if process and process.poll() is None:
