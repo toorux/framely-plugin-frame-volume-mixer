@@ -45,9 +45,10 @@ python3 scripts/pack.py
 
 参照 Termix、透视插件的流程：
 
-1. 推送到 `main` 或提交 PR，自动测试、构建 ARM64 包并保存 Actions artifact。
-2. 推送与 `manifest.version` 一致的 `v<version>` 标签，自动构建并发布 GitHub Release，上传 `.framely` 和 `SHA256SUMS`。
-3. 发布成功后，更新数据库仓库的插件子模块，固定到标签对应的源码提交。正式版更新 `main`，预发布版更新 `testing`。
+仅版本标签触发构建，推送 `main` 或提交 PR 不触发构建。
+
+1. 推送与 `manifest.version` 一致的 `v<version>` 标签，自动构建并发布 GitHub Release，上传 `.framely` 和 `SHA256SUMS`。
+2. 发布成功后，更新数据库仓库的插件子模块，固定到标签对应的源码提交。正式版更新 `main`，预发布版更新 `testing`。
 
 数据库默认使用 `toorux/framely-plugin-database`。在本仓库 **Settings → Secrets and variables → Actions** 配置：
 
@@ -55,8 +56,8 @@ python3 scripts/pack.py
 - 可选 Variable `DATABASE_REPOSITORY`：覆盖目标仓库，格式为 `owner/repository`。
 
 ```sh
-git tag v0.2.9
-git push origin v0.2.9
+git tag v0.2.10-preview.1
+git push origin v0.2.10-preview.1
 ```
 
 手动运行 **Release plugin** 时选择对应版本标签。发布成功但数据库登记失败时，运行 **Register plugin in database**，填入已发布的标签；重试不会修改其他插件或重复提交。该流程更新作者的数据库仓库，不自动向上游创建 PR。

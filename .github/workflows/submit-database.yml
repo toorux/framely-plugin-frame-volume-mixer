@@ -14,7 +14,7 @@ on:
       release_tag:
         description: Published release tag
         required: true
-        default: v0.2.9
+        default: v0.2.10-preview.1
         type: string
 
 permissions:

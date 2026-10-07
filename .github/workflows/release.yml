@@ -64,6 +64,12 @@ jobs:
         run: |
           npm run build
           python3 scripts/pack.py
+          python3 - <<'PY'
+          import pathlib, struct
+          backend = pathlib.Path('payload/backend').read_bytes()
+          assert backend[:4] == b'\x7fELF' and backend[4:6] == bytes([2, 1])
+          assert struct.unpack_from('<H', backend, 18)[0] == 183, 'Backend must be ARM64'
+          PY
           cd dist
           sha256sum --check SHA256SUMS
       - uses: actions/upload-artifact@v4
