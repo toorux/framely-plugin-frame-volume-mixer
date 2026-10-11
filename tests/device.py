@@ -73,9 +73,27 @@ with tempfile.TemporaryDirectory(prefix='framely-mixer-test-') as folder:
         aa=next(s for s in result['result']['streams'] if s['serial']==a['serial']);assert not aa['muted'],aa
         old=params(a,volume=10);old['targets'][0]['serial']+=100000
         assert 'error' in rpc('streams.set',old),'stale stream accepted'
+        assert 'error' not in rpc('streams.set',params(a,muted=True))
         children[0].terminate();children[0].wait(timeout=3)
         time.sleep(.2)
         assert 'error' in rpc('streams.set',params(a,volume=10)),'exited stream accepted'
+        result=rpc('status.get')['result']
+        remembered=next(s for s in result['rememberedApps'] if s['app']=='Framely Mixer Native Test')
+        assert remembered['userMuted'] and remembered['volume']==35,remembered
+        key=remembered['appKey']
+        result=rpc('apps.set',{'cookie':state['cookie'],'appKey':key,'volume':47});assert 'error' not in result,result
+        result=rpc('apps.set',{'cookie':state['cookie'],'appKey':key,'muted':False});assert 'error' not in result,result
+        assert not any(s['appKey']==key for s in result['result']['rememberedApps'])
+        children.append(subprocess.Popen(['pw-play','--properties=application.name="Framely Mixer Native Test"',wav],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,env={**os.environ,'SteamAppId':'1'}))
+        deadline=time.monotonic()+8
+        while time.monotonic()<deadline:
+            result=rpc('status.get')['result']
+            reopened=next((s for s in result['streams'] if s['app']=='Framely Mixer Native Test'),None)
+            if reopened:break
+            time.sleep(.15)
+        assert reopened and abs(reopened['volume']-47)<1 and not reopened['muted'],reopened
+        assert not any(s['appKey']==key for s in result['rememberedApps'])
+
         system=next(s for s in state['streams'] if s['system'])
         assert 'error' in rpc('streams.set',params(system,volume=10)),'system chain accepted'
         # Verify lifecycle works and exits on stdin close without an audio worker left behind.
@@ -95,7 +113,7 @@ with tempfile.TemporaryDirectory(prefix='framely-mixer-test-') as folder:
         print('external volume event latency:',round((time.monotonic()-started)*1000),'ms')
         assert rpc('framely.lifecycle.stop')['result']['stopped']
         worker.stdin.close();worker.wait(timeout=5);assert worker.returncode==0
-        print(json.dumps({'passed':True,'native':{'pid':a['pid'],'volume':aa['volume']},'pulse':{'pid':b['pid'],'isolated':True},'checks':['background mute+original mute restoration','native+Pulse enumeration','PID attribution','35% readback','independent volume','mute/unmute','stale serial rejection','exited stream rejection','system chain rejection','lifecycle+EOF','default output read+same-value write','stale output rejection']},ensure_ascii=False))
+        print(json.dumps({'passed':True,'native':{'pid':a['pid'],'volume':aa['volume']},'pulse':{'pid':b['pid'],'isolated':True},'checks':['remember muted exited app+edit+reopen','background mute+original mute restoration','native+Pulse enumeration','PID attribution','35% readback','independent volume','mute/unmute','stale serial rejection','exited stream rejection','system chain rejection','lifecycle+EOF','default output read+same-value write','stale output rejection']},ensure_ascii=False))
     finally:
         for child in children:
             if child.poll() is None:

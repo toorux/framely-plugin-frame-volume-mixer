@@ -5,7 +5,7 @@ export const messages:Record<string,string>={
 '刷新音量':'Refresh volume','打开音量合成器窗口':'Open volume mixer','正在读取系统音量':'Reading master volume',
 '暂无默认播放设备':'No default output device','音频连接已中断，请刷新。':'Audio connection lost. Refresh to reconnect.',
 '{count} 个应用':'{count} apps','{count} 个设备':'{count} devices','未命名应用':'Unnamed app',
-'已静音':'Muted','播放中':'Playing','已暂停':'Paused','分别调节播放流':'Adjust individual streams',
+'暂无播放流':'No playback stream','已静音':'Muted','播放中':'Playing','已暂停':'Paused','分别调节播放流':'Adjust individual streams',
 '无法读取应用音量，请刷新。':'Unable to read app volume. Please refresh.',
 '暂无应用播放声音':'No apps are playing audio','播放游戏、视频或音乐后，会自动显示在这里。':'Apps appear here when they play audio.',
 '等待音频服务连接':'Waiting for the audio service','未命名输出设备':'Unnamed output device',

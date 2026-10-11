@@ -6,16 +6,18 @@ import {LanguageProvider,useLocale} from './i18n';
 const style=document.createElement('style');style.textContent=css;document.head.append(style);
 type Target={id:number;serial:number};
 type Stream=Target & {app:string;binary:string;pid:number|null;host?:string;iconKey?:string|null;name:string;state:string;system:boolean;virtualDevice?:boolean;volume:number|null;muted:boolean|null;error:string|null;backgroundMute?:boolean;autoMuted?:boolean;userMuted?:boolean|null;focused?:boolean|null;focusSupported?:boolean;focusError?:string|null};
-type Status={connected:boolean;cookie:number|null;master:Stream|null;outputs?:Stream[];streams:Stream[];error:string|null;backgroundMute?:boolean;focusError?:string|null};
+type RememberedApp={focusSupported?:boolean;appKey:string;app:string;binary:string;iconKey?:string|null;volume:number|null;muted:boolean;userMuted:boolean;backgroundMute:boolean};
+type VolumeState=Pick<Stream,'volume'|'muted'|'userMuted'> & Partial<Target>;
+type Status={rememberedApps?:RememberedApp[];connected:boolean;cookie:number|null;master:Stream|null;outputs?:Stream[];streams:Stream[];error:string|null;backgroundMute?:boolean;focusError?:string|null};
 type Change={targets:Target[];volume?:number;muted?:boolean};
 const icons=new Map<string,Promise<string|null>>();
-function AppIcon({stream}:{stream:Stream}) {
+function AppIcon({stream}:{stream:Pick<Stream,'iconKey'|'binary'>}) {
   const key=stream.iconKey||stream.binary;
   const [src,setSrc]=useState<string|null>(null);
   useEffect(()=>{let active=true;setSrc(null);if(key){let request=icons.get(key);if(!request){request=framely.call<{src:string|null}>('icon.get',{key}).then(v=>v.src?.startsWith('data:image/png;base64,')?v.src:null).catch(()=>null);icons.set(key,request)}void request.then(v=>{if(active)setSrc(v)})}return()=>{active=false}},[key]);
   return <span className="app-icon" aria-hidden="true">{src?<img src={src} alt="" onError={()=>setSrc(null)}/>:<span className="empty-icon"/>}</span>;
 }
-function Volume({name,streams,disabled,apply}:{name:string;streams:Stream[];disabled:boolean;apply:(v:Change)=>Promise<void>}) {
+function Volume({name,streams,disabled,apply}:{name:string;streams:VolumeState[];disabled:boolean;apply:(v:Change)=>Promise<void>}) {
   const {t}=useLocale();
   const values=streams.map(s=>s.volume).filter((v):v is number=>v!==null);
   const value=values.length?Math.max(...values):0;
@@ -27,7 +29,7 @@ function Volume({name,streams,disabled,apply}:{name:string;streams:Stream[];disa
   useEffect(()=>{if(!editing.current&&!pending&&draft!==null&&streams.every(s=>s.volume!==null&&Math.abs(s.volume-draft)<0.5)){setDraft(null);draftRef.current=null}},[streams,draft,pending]);
   useEffect(()=>{if(pending||draft===null)return;const timer=setTimeout(()=>{if(!editing.current){setDraft(null);draftRef.current=null}},2000);return()=>clearTimeout(timer)},[draft,pending]);
   const blocked=disabled||pending||streams.some(s=>s.volume===null||s.muted===null);
-  const targets=streams.map(({id,serial})=>({id,serial}));
+  const targets=streams.filter((s):s is VolumeState & Target=>s.id!==undefined&&s.serial!==undefined).map(({id,serial})=>({id,serial}));
   async function commit(v:Change){editing.current=false;setPending(true);try{await apply(v)}catch{setDraft(null);draftRef.current=null}finally{setPending(false)}}
   function finish(){if(draftRef.current!==null&&editing.current)void commit({targets,volume:draftRef.current})}
   return <div className="volume-control">
@@ -55,7 +57,7 @@ function Mixer({quick=false}:{quick?:boolean}) {
       {s?.master?<><Volume key={`${s.cookie}:${s.master.serial}`} name={t('系统总音量')} streams={[s.master]} disabled={disabled} apply={v=>apply('master.set',v)}/>{s.master.error&&<p className="error" role="alert">{errorText(s.master.error)}</p>}</>:!s?<div className="skeleton" aria-label={t('正在读取系统音量')} role="status"/>:<p className="unavailable">{t('暂无默认播放设备')}</p>}
     </section>
     {(error||s?.error||s?.focusError||stale)&&<div className="error" role="alert">{errorText(error||s?.error||s?.focusError||(stale?t('音频连接已中断，请刷新。'):''))}</div>}
-    <section className="applications" aria-labelledby="apps-title"><div className="section-heading apps-heading"><h2 id="apps-title">{t('应用音量')}</h2>{s&&<small>{t('{count} 个应用',{count:grouped.size})}</small>}</div>
+    <section className="applications" aria-labelledby="apps-title"><div className="section-heading apps-heading"><h2 id="apps-title">{t('应用音量')}</h2>{s&&<small>{t('{count} 个应用',{count:grouped.size+(s.rememberedApps?.length??0)})}</small>}</div>
       <div className="application-list">
         {[...grouped.entries()].map(([key,xs])=><div className="application" key={`${s?.cookie}:${key}`}>
           <div className="app-row"><div className="app-identity"><AppIcon stream={xs[0]}/><div className="app-copy"><h3 title={xs[0].app}>{xs[0].app||t('未命名应用')}</h3><small>{xs.some(x=>x.autoMuted)?t('后台静音中'):(s?.backgroundMute||xs.some(x=>x.backgroundMute))&&xs.every(x=>x.focused==null)?t('等待焦点信息'):xs.every(x=>x.muted===true)?t('已静音'):xs.some(x=>x.state==='running')?t('播放中'):t('已暂停')}</small></div></div><div className="app-controls"><Volume name={xs[0].app} streams={xs} disabled={disabled} apply={v=>apply('streams.set',v)}/><button className={xs.some(x=>x.backgroundMute)?'is-muted':''} title={t('后台静音')} aria-label={t('{name} 后台静音',{name:xs[0].app})} aria-pressed={xs.some(x=>x.backgroundMute)} disabled={disabled||xs[0].focusSupported===false} onClick={()=>void policy('focus.set',{target:{id:xs[0].id,serial:xs[0].serial},enabled:!xs.some(x=>x.backgroundMute)})}><LayersIcon/></button></div></div>
@@ -63,8 +65,11 @@ function Mixer({quick=false}:{quick?:boolean}) {
           {xs.some(x=>x.error)&&<p className="error" role="alert">{t('无法读取应用音量，请刷新。')}</p>}
           {xs.length>1&&<details><summary aria-label={t('分别调节播放流')} title={t('分别调节播放流')}><ChevronDownIcon/></summary>{xs.map(x=><div className="app-row substream" key={x.serial}><div className="app-copy"><h3 title={x.name}>{x.name}</h3></div><Volume name={x.name} streams={[x]} disabled={disabled} apply={v=>apply('streams.set',v)}/></div>)}</details>}
         </div>)}
+        {s?.rememberedApps?.map(app=><div className="application" key={`remembered:${app.appKey}`}>
+          <div className="app-row"><div className="app-identity"><AppIcon stream={app}/><div className="app-copy"><h3 title={app.app}>{app.app||t('未命名应用')}</h3><small>{t('暂无播放流')}</small></div></div><div className="app-controls"><Volume name={app.app} streams={[app]} disabled={disabled} apply={async({volume,muted})=>{await policy('apps.set',{appKey:app.appKey,...(volume!==undefined?{volume}:{muted})})}}/><button className={app.backgroundMute?'is-muted':''} title={t('后台静音')} aria-label={t('{name} 后台静音',{name:app.app})} aria-pressed={app.backgroundMute} disabled={disabled||app.focusSupported===false} onClick={()=>void policy('apps.set',{appKey:app.appKey,backgroundMute:!app.backgroundMute})}><LayersIcon/></button></div></div>
+        </div>)}
         {!s&&[0,1].map(i=><div key={i} className="skeleton app-skeleton" aria-hidden="true"/>)}
-        {s?.connected&&!grouped.size&&<div className="empty">{t('暂无应用播放声音')}<small>{t('播放游戏、视频或音乐后，会自动显示在这里。')}</small></div>}
+        {s?.connected&&!grouped.size&&!s.rememberedApps?.length&&<div className="empty">{t('暂无应用播放声音')}<small>{t('播放游戏、视频或音乐后，会自动显示在这里。')}</small></div>}
         {s&&!s.connected&&<div className="empty">{t('等待音频服务连接')}</div>}
       </div>
     </section>

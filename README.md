@@ -44,11 +44,13 @@ python3 scripts/pack.py
 
 ## 后台静音与应用设置记忆
 
+被静音、启用独立后台静音或因全局后台静音而停止播放的应用，在音频流消失后仍保留显示，并标注“暂无播放流”。保留记录可跨插件重启；没有音频流时也可修改音量、取消静音及调整独立后台静音开关，设置在恢复播放时应用。恢复后只显示真实播放流，不重复列出记录。未静音且没有独立规则的无流应用不保留。旧版本没有保存应用显示信息的记录，需要在升级后至少出现一次播放流才能保留显示。
+
 顶部“后台静音”图标开关统一控制所有可关联焦点的应用。每个应用右侧另有独立图标开关，悬停提示“后台静音”。全局关闭后仍遵循应用独立开关；关闭所有相关开关或回到前台时恢复用户原来的静音状态。自动静音不改变音量。插件页面关闭后，后端仍继续运行。
 
 焦点自动按应用匹配 Gamescope 的 Steam 应用 ID、SteamVR 场景应用进程或桌面活动窗口；桌面支持 X11/EWMH 与 KDE Plasma 5/6 Wayland。安卓容器按 Steam ID / 注册包名关联，避免把容器 PID 当宿主 PID。其他 Wayland 合成器尚未接入。无法关联、焦点读取失败或超时，会暂停自动控制并恢复插件施加的静音，界面显示“等待焦点信息”。SteamVR 的场景焦点与悬停某个 overlay 是不同概念。
 
-用户音量、手动静音、每应用后台静音及全局开关保存在 `$XDG_STATE_HOME/framely-volume-mixer/focus.json`（默认 `~/.local/state/framely-volume-mixer/focus.json`），以 Steam ID 或可执行文件路径关联应用；应用退出、音频流 ID 改变、插件重启后仍恢复。应用共用同一可执行文件时共用应用设置，单独播放流按名称记忆。状态文件也保存自动静音前的状态，正常停用及崩溃后的下一次启动会尝试恢复仍存在的播放流。
+用户音量、手动静音、每应用后台静音及全局开关保存在 `$XDG_STATE_HOME/framely-volume-mixer/focus.json`（默认 `~/.local/state/framely-volume-mixer/focus.json`），以 Steam ID 或可执行文件路径关联应用，无法解析进程时按宿主、程序及应用名称记忆；应用退出、音频流 ID 改变、插件重启后仍恢复。应用共用同一可执行文件时共用应用设置，单独播放流按名称记忆。状态文件也保存自动静音前的状态，正常停用及崩溃后的下一次启动会尝试恢复仍存在的播放流。
 
 ## GitHub Actions 发布与数据库登记
 
@@ -65,8 +67,8 @@ python3 scripts/pack.py
 - 可选 Variable `DATABASE_REPOSITORY`：覆盖目标仓库，格式为 `owner/repository`。
 
 ```sh
-git tag v0.2.10-preview.3
-git push origin v0.2.10-preview.3
+git tag v0.2.10-preview.4
+git push origin v0.2.10-preview.4
 ```
 
 手动运行 **Release plugin** 时选择对应版本标签。发布成功但数据库登记失败时，运行 **Register plugin in database**，填入已发布的标签；重试不会修改其他插件或重复提交。该流程更新作者的数据库仓库，不自动向上游创建 PR。

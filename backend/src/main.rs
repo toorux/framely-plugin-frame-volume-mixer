@@ -100,6 +100,7 @@ fn main() -> Result<()> {
                         "status.get" => policy.tick(),
                         "focus.set" => policy.set(&req["params"])?,
                         "focus.global" => policy.global(&req["params"])?,
+                        "apps.set" => policy.remembered(&req["params"])?,
                         "icon.get" => icon(req["params"]["key"].as_str().unwrap_or(""))?,
                         "outputs.set" => {
                             output_change(serde_json::from_value::<Change>(

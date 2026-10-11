@@ -25,7 +25,7 @@ elif program=='pw-dump':
   {'id':n['id'],'type':'PipeWire:Interface:Node','info':{'state':'running','props':{
     'media.class':'Stream/Output/Audio','object.serial':n['serial'],'application.name':'Waydroid',
     'application.process.binary':'waydroid','application.process.id':1,
-    'application.process.host':'lepton-steamlaunch-'+str(n['app']), 'media.name':n['name']}}}
+    'application.process.host':n.get('host','lepton-steamlaunch-'+str(n['app'])), 'media.name':n['name']}}}
   for n in s['nodes']]]))
 elif program=='wpctl':
  node=next(n for n in s['nodes'] if n['id']==int(sys.argv[2]))
@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix='mixer-policy-') as temporary:
                 messages.put(json.loads(line))
         threading.Thread(target=read_messages, daemon=True).start()
     request_id = 0
-    def rpc(method, **params):
+    def rpc(method, expect_error=False, **params):
         global request_id
         request_id += 1
         process.stdin.write(json.dumps({'id': request_id, 'method': method, 'params': params}) + '\n')
@@ -70,6 +70,9 @@ with tempfile.TemporaryDirectory(prefix='mixer-policy-') as temporary:
             try: message = messages.get(timeout=1)
             except queue.Empty: continue
             if message.get('id') == request_id:
+                if expect_error:
+                    assert 'error' in message, message
+                    return message['error']
                 assert 'error' not in message, message
                 return message['result']
         raise AssertionError('RPC timeout')
@@ -155,7 +158,58 @@ with tempfile.TemporaryDirectory(prefix='mixer-policy-') as temporary:
             time.sleep(.04)
         print('Autonomous focus-to-mute latency (ms):', ', '.join(f'{n:.0f}' for n in timings))
         rpc('framely.lifecycle.stop')
-        print('Global/app policy, manual mute preservation, missing focus, crash recovery and reopened-app preferences passed')
+        rpc('focus.global', enabled=False)
+        rpc('apps.set', cookie=7, appKey='steam:42', muted=True)
+        live = json.loads(fixture.read_text())['nodes']
+        update(nodes=[])
+        result = rpc('status.get')
+        row = next(a for a in result['rememberedApps'] if a['appKey']=='steam:42')
+        assert row['userMuted'] and row['volume']==25
+        assert not result['streams'], 'Remembered apps must not masquerade as live audio nodes'
+        process.stdin.close(); process.wait(timeout=12); start()
+        assert any(a['appKey']=='steam:42' for a in rpc('status.get')['rememberedApps']), 'Muted app must survive backend restart'
+        before = fixture.read_text()
+        rpc('apps.set', expect_error=True, cookie=8, appKey='steam:42', muted=False)
+        rpc('apps.set', expect_error=True, cookie=7, appKey='steam:unknown', muted=False)
+        rpc('apps.set', expect_error=True, cookie=7, appKey='steam:42', volume=101)
+        rpc('apps.set', expect_error=True, cookie=7, appKey='steam:42', volume=50, muted=False)
+        assert fixture.read_text()==before, 'Invalid remembered-app requests must never write audio'
+        rpc('apps.set', cookie=7, appKey='steam:42', volume=46)
+        result = rpc('apps.set', cookie=7, appKey='steam:42', muted=False)
+        assert not any(a['appKey']=='steam:42' for a in result['rememberedApps'])
+        live[0].update(id=40, serial=400, volume=100, muted=True)
+        update(nodes=live)
+        result = rpc('status.get')
+        app = next(s for s in result['streams'] if s['host']=='lepton-steamlaunch-42')
+        assert app['volume']==46 and not app['muted'], 'Absent-app edits must apply to new audio nodes'
+        assert not any(a['appKey']=='steam:42' for a in result['rememberedApps']), 'No duplicate remembered/live app'
+        # Background policy also remains reachable after the stream vanishes.
+        rpc('apps.set', cookie=7, appKey='steam:42', backgroundMute=True)
+        update(nodes=[])
+        result = rpc('status.get')
+        assert next(a for a in result['rememberedApps'] if a['appKey']=='steam:42')['backgroundMute']
+        result = rpc('apps.set', cookie=7, appKey='steam:42', backgroundMute=False)
+        assert not any(a['appKey']=='steam:42' for a in result['rememberedApps'])
+        # A global automatic mute retains the app without becoming its manual mute preference.
+        update(nodes=live, focus=43)
+        rpc('focus.global', enabled=True)
+        until(lambda r: next(s for s in r['streams'] if s['host']=='lepton-steamlaunch-42')['autoMuted'])
+        update(nodes=[])
+        row = next(a for a in rpc('status.get')['rememberedApps'] if a['appKey']=='steam:42')
+        assert not row['userMuted']
+        result = rpc('focus.global', enabled=False)
+        assert not any(a['appKey']=='steam:42' for a in result['rememberedApps'])
+        update(nodes=[{'id':70,'serial':700,'app':0,'host':'unresolved-container','name':'No process','volume':55,'muted':False}])
+        result = rpc('status.get')
+        assert not result['streams'][0]['focusSupported']
+        rpc('streams.set',cookie=7,targets=[target(result)],muted=True)
+        update(nodes=[])
+        row = next(a for a in rpc('status.get')['rememberedApps'] if a['appKey'].startswith('audio:'))
+        assert row['userMuted'] and not row['focusSupported'], 'Unresolved processes must also remain visible when muted'
+        rpc('apps.set', expect_error=True, cookie=7, appKey=row['appKey'], backgroundMute=True)
+        result = rpc('apps.set',cookie=7,appKey=row['appKey'],muted=False)
+        assert not result['rememberedApps']
+        print('Global/app policy, manual mute, recovery, reopen preferences and remembered muted apps passed')
     finally:
         if process and process.poll() is None:
             process.stdin.close(); process.wait(timeout=12)

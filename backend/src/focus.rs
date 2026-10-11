@@ -113,6 +113,18 @@ pub fn identity(s: &Stream) -> Option<Identity> {
         local: true,
     })
 }
+// A playback app can be remembered even when its process/focus cannot be resolved.
+fn preference_key(s: &Stream) -> Option<String> {
+    if s.system {
+        return None;
+    }
+    identity(s).map(|id| id.key).or_else(|| {
+        if s.app.is_empty() && s.binary.is_empty() {
+            return None;
+        }
+        Some(format!("audio:{}", json!([s.host, s.binary, s.app])))
+    })
+}
 fn related(ids: &[u32], focused: u32) -> bool {
     if focused == 0 {
         return false;
@@ -518,6 +530,15 @@ struct Preference {
     muted: Option<bool>,
     streams: BTreeMap<String, Preference>,
 }
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct AppInfo {
+    app: String,
+    binary: String,
+    icon_key: Option<String>,
+    last_muted: bool,
+    focus_supported: bool,
+}
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
@@ -525,6 +546,7 @@ struct Saved {
     enabled: BTreeSet<String>,
     owned: BTreeMap<String, Owned>,
     preferences: BTreeMap<String, Preference>,
+    applications: BTreeMap<String, AppInfo>,
 }
 pub struct Controller {
     saved: Saved,
@@ -640,8 +662,8 @@ impl Controller {
         let mut updates = BTreeMap::<String, Vec<&Stream>>::new();
         for target in &request.targets {
             if let Some(s) = current.streams.iter().find(|s| s.target == *target) {
-                if let Some(id) = identity(s) {
-                    updates.entry(id.key).or_default().push(s);
+                if let Some(key) = preference_key(s) {
+                    updates.entry(key).or_default().push(s);
                 }
             }
         }
@@ -649,7 +671,7 @@ impl Controller {
             let count = current
                 .streams
                 .iter()
-                .filter(|s| identity(s).is_some_and(|id| id.key == key))
+                .filter(|s| preference_key(s).is_some_and(|id| id == key))
                 .count();
             let pref = self.saved.preferences.entry(key).or_default();
             if selected.len() == count {
@@ -707,6 +729,95 @@ impl Controller {
         }
         Ok(self.tick())
     }
+    /// Edit a remembered app by stable identity, never by a vanished audio node ID.
+    pub fn remembered(&mut self, params: &Value) -> Result<Value> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            cookie: u64,
+            app_key: String,
+            volume: Option<f64>,
+            muted: Option<bool>,
+            background_mute: Option<bool>,
+        }
+        let req: Request = serde_json::from_value(params.clone())?;
+        ensure!(
+            self.saved.applications.contains_key(&req.app_key),
+            "无法关联应用焦点"
+        );
+        ensure!(
+            usize::from(req.volume.is_some())
+                + usize::from(req.muted.is_some())
+                + usize::from(req.background_mute.is_some())
+                == 1,
+            "一次只能设置音量或静音"
+        );
+        if let Some(volume) = req.volume {
+            ensure!(
+                volume.is_finite() && (0.0..=100.0).contains(&volume),
+                "音量必须在 0–100% 之间"
+            );
+        }
+        let current = snapshot()?;
+        ensure!(current.cookie == req.cookie, "音频服务已重启，请刷新后重试");
+        if let Some(enabled) = req.background_mute {
+            ensure!(
+                self.saved.applications[&req.app_key].focus_supported,
+                "无法关联应用焦点"
+            );
+            if enabled {
+                self.saved.enabled.insert(req.app_key);
+            } else {
+                self.saved.enabled.remove(&req.app_key);
+            }
+        } else {
+            let targets: Vec<_> = current
+                .streams
+                .iter()
+                .filter(|s| preference_key(s).is_some_and(|id| id == req.app_key))
+                .map(|s| s.target.clone())
+                .collect();
+            // An app may create a new stream between the displayed status and this request.
+            if !targets.is_empty() {
+                return self.manual(Change {
+                    cookie: current.cookie,
+                    targets,
+                    volume: req.volume,
+                    muted: req.muted,
+                });
+            }
+            let pref = self.saved.preferences.entry(req.app_key).or_default();
+            if req.volume.is_some() {
+                pref.volume = req.volume;
+                for stream in pref.streams.values_mut() {
+                    stream.volume = None;
+                }
+            }
+            if req.muted.is_some() {
+                pref.muted = req.muted;
+                for stream in pref.streams.values_mut() {
+                    stream.muted = None;
+                }
+            }
+        }
+        self.save()?;
+        Ok(self.tick())
+    }
+    fn remembered_rows(&self, streams: &[Stream]) -> Value {
+        let active: BTreeSet<_> = streams.iter().filter_map(preference_key).collect();
+        let rows: Vec<_> = self.saved.applications.iter().filter_map(|(key, info)| {
+            if active.contains(key) { return None; }
+            let pref = self.saved.preferences.get(key)?;
+            let user_muted = pref.muted == Some(true) || pref.streams.values().any(|s| s.muted == Some(true));
+            let background = self.saved.enabled.contains(key);
+            // Keep apps whose manual or automatic mute made their stream disappear.
+            if !(user_muted || background || (self.saved.global && info.last_muted)) { return None; }
+            let volume = pref.volume.or_else(|| pref.streams.values().filter_map(|s| s.volume).reduce(f64::max));
+            Some(json!({"appKey":key,"app":info.app,"binary":info.binary,"iconKey":info.icon_key,
+                "volume":volume,"muted":user_muted || ((self.saved.global || background) && info.last_muted),"userMuted":user_muted,"backgroundMute":background,"focusSupported":info.focus_supported}))
+        }).collect();
+        json!(rows)
+    }
     pub fn tick(&mut self) -> Value {
         let raw = self.apply(status(), true);
         self.cached = raw["connected"]
@@ -724,6 +835,7 @@ impl Controller {
     fn apply(&mut self, mut raw: Value, refresh: bool) -> Value {
         raw["backgroundMute"] = json!(self.saved.global);
         let Some(cookie) = raw["cookie"].as_u64() else {
+            raw["rememberedApps"] = self.remembered_rows(&[]);
             return raw;
         };
         let Ok(streams) = serde_json::from_value::<Vec<Stream>>(raw["streams"].clone()) else {
@@ -744,18 +856,20 @@ impl Controller {
             .collect();
         self.saved.owned.retain(|key, _| alive.contains(key));
         self.seen.retain(|key| alive.contains(key));
+        let mut app_mutes = BTreeMap::<String, bool>::new();
         for (i, original) in streams.iter().enumerate() {
             let mut s = original.clone();
             if s.system {
                 continue;
             }
             let id = identity(&s);
+            let app_key = preference_key(&s);
             let key = format!("{cookie}:{}", s.target.serial);
             let mut preference_error = None;
             if refresh && !self.seen.contains(&key) {
-                if let Some(pref) = id
+                if let Some(pref) = app_key
                     .as_ref()
-                    .and_then(|id| self.saved.preferences.get(&id.key))
+                    .and_then(|key| self.saved.preferences.get(key))
                     .cloned()
                 {
                     let individual = pref.streams.get(&s.name);
@@ -839,14 +953,16 @@ impl Controller {
                     Err(e) => error = Some(e.to_string()),
                 }
             }
-            if let Some(id) = &id {
+            if let Some(app_key) = &app_key {
                 if refresh && error.is_none() {
                     let desired = self.saved.owned.get(&key).map(|o| o.muted).or(s.muted);
                     let count = streams
                         .iter()
-                        .filter(|stream| identity(stream).is_some_and(|other| other.key == id.key))
+                        .filter(|stream| {
+                            preference_key(stream).is_some_and(|other| other == *app_key)
+                        })
                         .count();
-                    let pref = self.saved.preferences.entry(id.key.clone()).or_default();
+                    let pref = self.saved.preferences.entry(app_key.clone()).or_default();
                     if count == 1 {
                         if s.volume.is_some() {
                             if pref.volume != s.volume {
@@ -886,8 +1002,23 @@ impl Controller {
             raw["streams"][i]["userMuted"] =
                 json!(self.saved.owned.get(&key).map(|o| o.muted).or(s.muted));
             raw["streams"][i]["focusError"] = json!(error);
+            if let Some(app_key) = &app_key {
+                let muted = app_mutes.entry(app_key.clone()).or_default();
+                *muted |= raw["streams"][i]["muted"] == true;
+                self.saved.applications.insert(
+                    app_key.clone(),
+                    AppInfo {
+                        app: s.app.clone(),
+                        binary: s.binary.clone(),
+                        icon_key: s.icon_key.clone(),
+                        last_muted: *muted,
+                        focus_supported: id.is_some(),
+                    },
+                );
+            }
         }
         raw["backgroundMute"] = json!(self.saved.global);
+        raw["rememberedApps"] = self.remembered_rows(&streams);
         if let Err(e) = self.save() {
             raw["focusError"] = json!(e.to_string());
         }
