@@ -1,3 +1,4 @@
+mod app_names;
 pub mod focus;
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};

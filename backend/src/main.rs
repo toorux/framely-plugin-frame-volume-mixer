@@ -35,6 +35,10 @@ fn main() -> Result<()> {
         output(status());
         return Ok(());
     }
+    if std::env::args().any(|a| a == "--remembered-apps") {
+        output(framely_volume_mixer::focus::Controller::new().remembered_apps());
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--focus") {
         let reader = framely_volume_mixer::focus::Reader::start();
         std::thread::sleep(Duration::from_secs(2));

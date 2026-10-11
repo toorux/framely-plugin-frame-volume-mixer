@@ -209,6 +209,56 @@ with tempfile.TemporaryDirectory(prefix='mixer-policy-') as temporary:
         rpc('apps.set', expect_error=True, cookie=7, appKey=row['appKey'], backgroundMute=True)
         result = rpc('apps.set',cookie=7,appKey=row['appKey'],muted=False)
         assert not result['rememberedApps']
+        process.stdin.close(); process.wait(timeout=12)
+        legacy_home = tmp / 'legacy-home'
+        env['HOME'] = str(legacy_home)
+        registry = legacy_home / '.local/share/framely/apk-manager/state.json'
+        registry.parent.mkdir(parents=True)
+        registry.write_text(json.dumps({'records':{'android':{'steamAppId':42,'metadata':{'name':'旧安卓应用'}}}}))
+        steam = legacy_home / '.local/share/Steam'
+        (steam / 'steamapps').mkdir(parents=True)
+        (steam / 'steamapps/appmanifest_11.acf').write_text('"AppState" {\n"appid" "11"\n"name" "Old Steam game"\n}')
+        shortcuts = steam / 'userdata/1/config/shortcuts.vdf'
+        shortcuts.parent.mkdir(parents=True)
+        shortcuts.write_bytes(b'\x00shortcuts\x00\x000\x00\x02appid\x00'+(2838518023).to_bytes(4,'little')+b'\x01AppName\x00Old shortcut\x00\x08\x08\x08')
+        prefs = {
+            'exe:/missing/framely-vr':{'volume':35,'muted':True},
+            'steam:42':{'volume':37,'muted':True},
+            'steam:11':{'volume':50,'muted':True},
+            'steam:2838518023':{'volume':60,'muted':True},
+            'steam:1':{'volume':80,'muted':True},
+            'steam:99':{'volume':20,'muted':False},
+            'exe:/missing/custom':{'volume':40,'muted':False,'streams':{'Music':{'muted':True}}},
+        }
+        old = {'global':False,'enabled':['steam:900'],'owned':{},'preferences':prefs,
+               'applications':{'exe:/missing/custom':{'app':'Existing custom name','binary':'custom'}}}
+        saved_path = tmp / 'saved/framely-volume-mixer/focus.json'
+        saved_path.write_text(json.dumps(old))
+        update(nodes=[])
+        start()
+        result = rpc('status.get')
+        rows = {a['appKey']:a for a in result['rememberedApps']}
+        assert rows['exe:/missing/framely-vr']['app']=='framely-vr'
+        assert rows['steam:42']['app']=='旧安卓应用' and rows['steam:42']['iconKey']=='lepton:42'
+        assert rows['steam:11']['app']=='Old Steam game'
+        assert rows['steam:2838518023']['app']=='Old shortcut'
+        assert rows['steam:1']['app']=='Steam 1', 'Missing local metadata must not hide old muted apps'
+        assert rows['steam:900']['backgroundMute'], 'Legacy rule without volume preference must stay reachable'
+        assert rows['exe:/missing/custom']['app']=='Existing custom name', 'Migration must preserve newer display records'
+        assert 'steam:99' not in rows
+        migrated = json.loads(saved_path.read_text())
+        def unchanged(expected, actual):
+            for field, value in expected.items():
+                if isinstance(value, dict): unchanged(value, actual[field])
+                else: assert actual[field]==value, (field, value, actual[field])
+        for key, pref in prefs.items(): unchanged(pref, migrated['preferences'][key])
+        assert migrated['enabled']==old['enabled'] and migrated['global']==old['global']
+        before = saved_path.read_bytes()
+        process.stdin.close(); process.wait(timeout=12); start(); rpc('status.get')
+        assert saved_path.read_bytes()==before, 'Legacy migration must be idempotent'
+        result = rpc('apps.set',cookie=7,appKey='exe:/missing/framely-vr',muted=False)
+        assert not any(a['appKey']=='exe:/missing/framely-vr' for a in result['rememberedApps'])
+        print('Legacy preferences migrated without audio streams; names, fallback IDs, settings and restart verified')
         print('Global/app policy, manual mute, recovery, reopen preferences and remembered muted apps passed')
     finally:
         if process and process.poll() is None:

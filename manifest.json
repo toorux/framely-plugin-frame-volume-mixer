@@ -4,7 +4,7 @@
   "id": "tooru.volume-mixer",
   "name": "Frame 音量合成器",
   "author": "tooru",
-  "version": "0.2.10-preview.4",
+  "version": "0.2.10-preview.5",
   "description": "按进程调节播放音量与静音，支持 PipeWire 和 PulseAudio 应用。",
   "details": "顶部系统总音量控制当前默认播放设备，下方每个应用一行，可独立调音量与静音。透明背景界面沿用 Framely 样式，以 SteamOS 用户运行。",
   "category": "工具",
@@ -39,6 +39,6 @@
     }
   },
   "files": {},
-  "changelog": "被静音的应用在播放流消失后仍保留显示；支持修改保留应用的音量、静音及后台静音设置，恢复播放后自动应用。",
+  "changelog": "自动迁移旧版静音应用记录，无需重新播放即可显示；从本地 Framely/Steam 信息恢复名称，保留原音量、静音和后台静音设置。",
   "icon": "icon.png"
 }

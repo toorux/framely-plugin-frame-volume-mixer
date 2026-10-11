@@ -548,6 +548,90 @@ struct Saved {
     preferences: BTreeMap<String, Preference>,
     applications: BTreeMap<String, AppInfo>,
 }
+impl Saved {
+    fn migrate_apps(&mut self, home: &std::path::Path) {
+        if self
+            .preferences
+            .keys()
+            .chain(self.enabled.iter())
+            .all(|key| self.applications.contains_key(key))
+        {
+            return;
+        }
+        let mut names = crate::app_names::lookup(home);
+        let registry: Value = fs::read(home.join(".local/share/framely/apk-manager/state.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let mut android = BTreeSet::new();
+        for record in registry["records"]
+            .as_object()
+            .into_iter()
+            .flat_map(|m| m.values())
+        {
+            if let (Some(id), Some(name)) = (
+                record["steamAppId"].as_u64(),
+                record["metadata"]["name"]
+                    .as_str()
+                    .filter(|s| !s.is_empty()),
+            ) {
+                names.insert(id, name.to_owned());
+                android.insert(id);
+            }
+        }
+        let keys: BTreeSet<_> = self
+            .preferences
+            .keys()
+            .chain(self.enabled.iter())
+            .cloned()
+            .collect();
+        for key in keys {
+            if self.applications.contains_key(&key) {
+                continue;
+            }
+            let info = if let Some(id) = key
+                .strip_prefix("steam:")
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                AppInfo {
+                    app: names
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("Steam {id}")),
+                    icon_key: android.contains(&id).then(|| format!("lepton:{id}")),
+                    focus_supported: true,
+                    ..Default::default()
+                }
+            } else if let Some(exe) = key.strip_prefix("exe:") {
+                let Some(name) = std::path::Path::new(exe)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .filter(|s| !s.is_empty())
+                else {
+                    continue;
+                };
+                AppInfo {
+                    app: name.into(),
+                    binary: name.into(),
+                    focus_supported: true,
+                    ..Default::default()
+                }
+            } else {
+                continue;
+            };
+            let pref = self.preferences.entry(key.clone()).or_default();
+            let muted =
+                pref.muted == Some(true) || pref.streams.values().any(|s| s.muted == Some(true));
+            self.applications.insert(
+                key,
+                AppInfo {
+                    last_muted: muted || self.global,
+                    ..info
+                },
+            );
+        }
+    }
+}
 pub struct Controller {
     saved: Saved,
     path: PathBuf,
@@ -567,10 +651,11 @@ impl Controller {
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".local/state"));
         let path = dir.join("framely-volume-mixer/focus.json");
-        let saved = fs::read(&path)
+        let mut saved: Saved = fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
+        saved.migrate_apps(&home);
         Self {
             saved,
             path,
@@ -802,6 +887,10 @@ impl Controller {
         }
         self.save()?;
         Ok(self.tick())
+    }
+    /// Read-only inspection, including migrated legacy records, without audio writes.
+    pub fn remembered_apps(&self) -> Value {
+        self.remembered_rows(&[])
     }
     fn remembered_rows(&self, streams: &[Stream]) -> Value {
         let active: BTreeSet<_> = streams.iter().filter_map(preference_key).collect();

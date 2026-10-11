@@ -1,6 +1,6 @@
 [package]
 name = "framely-volume-mixer"
-version = "0.2.10-preview.4"
+version = "0.2.10-preview.5"
 edition = "2021"
 license = "MIT"
 [dependencies]
